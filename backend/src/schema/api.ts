@@ -119,3 +119,21 @@ export const RewriteBulletResponseSchema = z.object({
 
 export type RewriteBulletRequest = z.infer<typeof RewriteBulletRequestSchema>;
 export type RewriteBulletResponse = z.infer<typeof RewriteBulletResponseSchema>;
+
+// Score endpoint schemas
+export const ScoreRequestSchema = z.object({
+  cv: CVSchema,
+  targetRole: z.string().min(2),
+  jobDescription: z.string().optional(),
+  locale: z.enum(["tr", "en"]).default("en"),
+});
+
+export const ScoreResponseSchema = z.object({
+  atsScore: z.number().min(0).max(100),
+  roleFitScore: z.number().min(0).max(100),
+  issues: z.array(z.object({ path: z.string().optional(), message: z.string().min(3) })),
+  fixHints: z.array(z.string()),
+});
+
+export type ScoreRequest = z.infer<typeof ScoreRequestSchema>;
+export type ScoreResponse = z.infer<typeof ScoreResponseSchema>;
