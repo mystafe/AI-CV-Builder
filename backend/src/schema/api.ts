@@ -101,3 +101,21 @@ export const QuestionsNextResponseSchema = z.object({
 export type QuestionsNextRequest = z.infer<typeof QuestionsNextRequestSchema>;
 export type Question = z.infer<typeof QuestionSchema>;
 export type QuestionsNextResponse = z.infer<typeof QuestionsNextResponseSchema>;
+
+// Rewrite bullet endpoint schemas
+export const RewriteBulletRequestSchema = z.object({
+  before: z.string().min(3),
+  userFacts: z.array(z.string()).default([]),
+  targetRole: z.string().optional(),
+  jobDescription: z.string().optional(),
+  locale: z.enum(["tr", "en"]).default("en"),
+});
+
+export const RewriteBulletResponseSchema = z.object({
+  before: z.string().min(3),
+  after: z.string().min(3),
+  rationale: z.string().max(140).optional(),
+});
+
+export type RewriteBulletRequest = z.infer<typeof RewriteBulletRequestSchema>;
+export type RewriteBulletResponse = z.infer<typeof RewriteBulletResponseSchema>;
