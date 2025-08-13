@@ -17,6 +17,7 @@ interface State {
   questions: Question[];
   answers: Record<string, string | number | string[]>;
   scores: Scores;
+  lastAppliedPath?: string;
   setCV: (cv: CV) => void;
   mergeCVPatch: (patch: Partial<CV>) => void;
   setGaps: (g: GapItem[]) => void;
@@ -46,7 +47,7 @@ export const useSession = create<State>()(
           if (!state.cv) return {} as any;
           const cvCopy: any = structuredClone(state.cv);
           setByPath(cvCopy, path, afterText);
-          return { cv: cvCopy };
+          return { cv: cvCopy, lastAppliedPath: path };
         }),
       setScores: (s) => set({ scores: s }),
       reset: () => set({

@@ -46,8 +46,17 @@ export async function getNextQuestions(gaps: unknown, asked: string[]) {
   return QuestionsNextResponse.parse(data);
 }
 
-export async function rewriteBullet(path: string, text: string) {
-  const data = await fetchJson<unknown>("/api/rewrite/bullet", { path, text });
+export async function rewriteBullet(params: {
+  before: string;
+  userFacts?: string[];
+  targetRole?: string;
+  jobDescription?: string;
+  locale?: 'tr' | 'en';
+}) {
+  const data = await fetchJson<unknown>("/api/rewrite/bullet", {
+    userFacts: [],
+    ...params,
+  });
   return RewriteBulletResponse.parse(data);
 }
 
