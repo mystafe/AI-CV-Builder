@@ -69,3 +69,35 @@ export const GapsResponseSchema = z.object({
 export type GapsRequest = z.infer<typeof GapsRequestSchema>;
 export type GapItem = z.infer<typeof GapItemSchema>;
 export type GapsResponse = z.infer<typeof GapsResponseSchema>;
+
+// Questions next endpoint schemas
+export const QuestionsNextRequestSchema = z.object({
+  gaps: z
+    .array(
+      z.object({
+        type: z.enum(["MISSING_FIELD", "WEAK_BULLET", "MISSING_KEYWORD"]),
+        path: z.string().min(1),
+        ask: z.string().min(3),
+        why: z.string().optional(),
+      })
+    )
+    .min(1),
+  alreadyAsked: z.array(z.string()).default([]),
+  locale: z.enum(["tr", "en"]).default("en"),
+});
+
+export const QuestionSchema = z.object({
+  id: z.string().min(6),
+  text: z.string().min(3),
+  expects: z.enum(["shortText", "number", "multi"]),
+  options: z.array(z.string()).optional(),
+  path: z.string().optional(),
+});
+
+export const QuestionsNextResponseSchema = z.object({
+  questions: z.array(QuestionSchema).max(3),
+});
+
+export type QuestionsNextRequest = z.infer<typeof QuestionsNextRequestSchema>;
+export type Question = z.infer<typeof QuestionSchema>;
+export type QuestionsNextResponse = z.infer<typeof QuestionsNextResponseSchema>;
