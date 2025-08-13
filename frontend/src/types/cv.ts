@@ -18,6 +18,7 @@ export interface GapItem {
   id: string;
   path: string;
   message: string;
+  text?: string;
 }
 
 export interface Question {
