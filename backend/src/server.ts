@@ -5,6 +5,7 @@ import pipelineRouter from './routes/pipeline';
 import extractRouter from './routes/extract';
 import gapsRouter from './routes/gaps';
 import questionsRouter from './routes/questions';
+import rewriteRouter from './routes/rewrite';
 
 const app = express();
 const port = process.env.PORT || 5001;
@@ -16,6 +17,7 @@ app.use('/api', pipelineRouter);
 app.use('/api/extract', extractRouter);
 app.use('/api/gaps', gapsRouter);
 app.use('/api/questions', questionsRouter);
+app.use('/api/rewrite', rewriteRouter);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
