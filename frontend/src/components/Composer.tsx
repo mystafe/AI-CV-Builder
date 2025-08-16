@@ -58,7 +58,10 @@ export default function Composer({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3">
+    <form
+      onSubmit={handleSubmit}
+      className="space-y-3 sticky bottom-0 bg-white/90 dark:bg-slate-950/90 backdrop-blur supports-[padding:max(0px)]:pb-[max(env(safe-area-inset-bottom),1rem)] pb-4 pt-3 px-3"
+    >
       {questions.map((q) => (
         <div key={q.id} className="space-y-1">
           <label className="text-sm font-medium">
@@ -88,11 +91,11 @@ export default function Composer({
           )}
         </div>
       ))}
-      <div className="pt-2">
+      <div className="pt-2 flex gap-2">
         <button
           type="submit"
           disabled={disabled || submitting}
-          className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm"
+          className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm w-full sm:w-auto"
         >
           {submitting
             ? lang === "tr"

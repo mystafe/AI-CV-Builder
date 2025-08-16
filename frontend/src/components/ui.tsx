@@ -19,9 +19,9 @@ export const Container: React.FC<ContainerProps> = ({
 }) => {
   const sizeClasses = {
     sm: "max-w-3xl",
-    md: "max-w-5xl",
-    lg: "max-w-7xl",
-    xl: "max-w-[90rem]",
+    md: "max-w-3xl",
+    lg: "max-w-3xl",
+    xl: "max-w-3xl",
     full: "max-w-full"
   }
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import MessageList, { Msg } from "./MessageList"
 import Composer from "./Composer"
 import { createApiClient } from "../lib/api.client"
@@ -128,10 +128,16 @@ export default function ChatFlow({ cv, sectorId, roleId, seniority }: Props) {
     )
   }
 
+  const endRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages])
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-28">
       {error && <div className="text-sm text-red-600">{error}</div>}
       <MessageList messages={messages} />
+      <div ref={endRef} />
       {!done ? (
         <Composer
           questions={questions}
@@ -142,13 +148,13 @@ export default function ChatFlow({ cv, sectorId, roleId, seniority }: Props) {
       ) : (
         <div className="flex gap-2">
           <button
-            className="px-3 py-2 rounded-md border text-sm"
+            className="px-3 py-2 rounded-md border text-sm w-full sm:w-auto"
             onClick={onDownload}
           >
             {lang === "tr" ? "Bu haliyle indir" : "Download as is"}
           </button>
           <button
-            className="px-3 py-2 rounded-md bg-blue-600 text-white text-sm"
+            className="px-3 py-2 rounded-md bg-blue-600 text-white text-sm w-full sm:w-auto"
             onClick={onContinuePolish}
           >
             {lang === "tr"
