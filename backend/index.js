@@ -11,77 +11,97 @@ const { z } = require('zod')
 const fs = require('fs')
 const path = require('path')
 const web_search = require('./services/webSearch'); // Added for web search functionality
+const { normalizeLanguage, resolveLanguage } = require('./utils/lang')
+const pino = require('pino')
+const pinoHttp = require('pino-http')
 
 // Debug mode configuration
 let DEBUG = process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development'
 let CURRENT_AI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
-// Log storage for admin panel
-let logHistory = []
-const addToLogHistory = (level, message) => {
-  const logEntry = {
-    timestamp: new Date().toISOString(),
-    level,
-    message: typeof message === 'object' ? JSON.stringify(message, null, 2) : String(message)
-  }
-  logHistory = [...logHistory.slice(-49), logEntry] // Son 50 log tut
+// Pino logger setup
+const LOG_DIR = path.join(process.cwd(), 'logs')
+if (process.env.NODE_ENV !== 'production') {
+  try { fs.mkdirSync(LOG_DIR, { recursive: true }) } catch { }
 }
+const pinoDestination = process.env.NODE_ENV === 'production'
+  ? pino.destination(1) // stdout
+  : pino.destination({ dest: path.join(LOG_DIR, 'app.log'), sync: false })
+const logger = pino({ level: process.env.LOG_LEVEL || 'info', base: undefined, timestamp: pino.stdTimeFunctions.isoTime }, pinoDestination)
 
-const debugLog = (...args) => {
-  const message = args.join(' ')
-  if (DEBUG) {
-    console.log('[DEBUG]', new Date().toISOString(), ...args)
-    addToLogHistory('DEBUG', message)
+// pino-http with request-id propagation
+const httpLogger = pinoHttp({
+  logger,
+  genReqId: function (req, res) {
+    const hdr = req.headers['x-request-id'] || req.headers['x-requestid']
+    let id = Array.isArray(hdr) ? hdr[0] : hdr
+    if (!id) id = `req_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    res.setHeader('X-Request-Id', id)
+    return id
+  },
+  serializers: {
+    req(req) {
+      return { id: req.id, method: req.method, url: req.url }
+    },
+    res(res) {
+      return { statusCode: res.statusCode }
+    }
   }
-}
-const infoLog = (...args) => {
-  const message = args.join(' ')
-  console.log('[INFO]', new Date().toISOString(), ...args)
-  addToLogHistory('INFO', message)
-}
-const errorLog = (...args) => {
-  const message = args.join(' ')
-  console.error('[ERROR]', new Date().toISOString(), ...args)
-  addToLogHistory('ERROR', message)
+})
+
+// Env validation
+const EnvSchema = z.object({
+  PORT: z.string().optional(),
+  OPENAI_API_KEY: z.string().min(10, 'OPENAI_API_KEY required'),
+  OPENAI_MODEL: z.string().optional(),
+  NODE_ENV: z.enum(['production', 'development', 'test']).optional(),
+  MAX_UPLOAD_MB: z.string().optional(),
+  CORS_ORIGINS: z.string().optional(),
+  LOG_LEVEL: z.string().optional(),
+  REACT_APP_DEFAULT_LANG: z.string().optional(),
+  BASE_URL: z.string().optional(),
+  CHROME_BIN: z.string().optional()
+})
+const envValidation = EnvSchema.safeParse(process.env)
+if (!envValidation.success) {
+  console.error('Invalid environment variables:', envValidation.error.flatten().fieldErrors)
+  process.exit(1)
 }
 
 const app = express()
+app.use(httpLogger)
 const PORT = process.env.PORT || 4000
 
 // Middleware setup
 app.use(helmet())
 
-// CORS configuration for multiple origins
-const allowedOrigins = [
-  'http://localhost:3000', // Local development
-  'https://cvbuilderwithai.vercel.app', // Production frontend
-  process.env.FRONTEND_URL // Additional environment-specific URL
-].filter(Boolean) // Remove any undefined values
+// CORS configuration: comma-separated whitelist from env
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+// include localhost by default in dev
+if (process.env.NODE_ENV !== 'production') {
+  ['http://localhost:3000', 'http://127.0.0.1:3000'].forEach((o) => {
+    if (!allowedOrigins.includes(o)) allowedOrigins.push(o)
+  })
+}
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin or same-origin
     if (!origin) return callback(null, true)
     if (allowedOrigins.includes(origin)) return callback(null, true)
-    // Fallback: allow same-host different port (Render/Vercel proxy)
-    try {
-      const u = new URL(origin)
-      const host = u.hostname
-      const isRender = host.includes('onrender.com') || host.includes('vercel.app')
-      if (isRender) return callback(null, true)
-    } catch { }
-    console.warn(`CORS blocked origin: ${origin}`)
     return callback(new Error('Not allowed by CORS'), false)
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Session-Id', 'X-Request-Id']
 }))
 
-// Rate limiting - global: 60 requests per 5 minutes
+// Rate limiting - global: 120 requests per 10 minutes
 const limiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 60,
+  windowMs: 10 * 60 * 1000,
+  max: 120,
   message: {
     error: 'Too many requests from this IP, please try again later.'
   },
@@ -90,28 +110,31 @@ const limiter = rateLimit({
 })
 app.use(limiter)
 
-// Additional API limiter: 20 requests per minute on /api/*
-app.use('/api', rateLimit({
-  windowMs: 60 * 1000,
-  max: 20,
-  message: { error: 'Too many API requests, please slow down.' },
+// AI endpoints limiter: 60 requests per 10 minutes on /api/ai/*
+app.use('/api/ai', rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  message: { error: 'Too many AI requests, please slow down.' },
   standardHeaders: true,
   legacyHeaders: false,
 }))
 
 // Multer setup for file uploads
+const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '10', 10)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
+    fileSize: MAX_UPLOAD_MB * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword', 'text/plain']
+    const allowedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ]
     if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true)
-    } else {
-      cb(new Error('Invalid file type. Only PDF, DOCX, DOC, and TXT files are allowed.'), false)
+      return cb(null, true)
     }
+    return cb(new Error('Invalid file type. Only PDF and DOCX files are allowed.'), false)
   }
 })
 
@@ -120,22 +143,75 @@ const upload = multer({
 app.use(express.json({ limit: '2mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
+// Timeout middleware helpers
+function timeoutMiddleware(ms) {
+  return function (req, res, next) {
+    res.setTimeout(ms, () => {
+      if (!res.headersSent) {
+        req.log?.warn({ requestId: req.id, path: req.originalUrl, timeoutMs: ms }, 'request_timeout')
+        res.status(504).json({ error: 'timeout', message: `Request timed out after ${ms}ms` })
+      }
+    })
+    next()
+  }
+}
+// 30s for AI calls
+app.use('/api/ai', timeoutMiddleware(30_000))
+// 60s for PDF routes
+app.use('/api/finalize-and-create-pdf', timeoutMiddleware(60_000))
+app.use('/api/render/pdf', timeoutMiddleware(60_000))
+app.use('/api/render/docx', timeoutMiddleware(60_000))
+app.use('/api/ai/coverletter-pdf', timeoutMiddleware(60_000))
+
 // Logging middleware
 app.use((req, res, next) => {
   // Skip logging for admin/internal endpoints to prevent log spam
   const skipPaths = ['/api/logs', '/api/config', '/api/health']
   const shouldSkip = skipPaths.includes(req.path)
 
-  if (DEBUG && !shouldSkip) {
-    debugLog(`${req.method} ${req.path}`, req.query, req.body ? Object.keys(req.body) : 'no-body')
-  } else if (!DEBUG && !shouldSkip) {
-    // Only log important endpoints in production
-    if (['/api/upload-parse', '/api/ai/questions', '/api/ai/score', '/api/ai/coverletter'].includes(req.path)) {
-      infoLog(`${req.method} ${req.path}`)
-    }
+  if (!shouldSkip) {
+    req.log.info({ requestId: req.id, path: req.path, method: req.method }, 'req')
   }
   next()
 })
+
+// Mount gap analysis router if available
+try {
+  const gapRouter = require('./routes/gap')?.default || require('./routes/gap')?.gapRouter
+  if (gapRouter) app.use('/api/gap', gapRouter)
+} catch (e) {
+  // ignore if TS-only router not built
+}
+
+// Mount followup router if available
+try {
+  const followupRouter = require('./routes/followup')?.default || require('./routes/followup')?.followupRouter
+  if (followupRouter) app.use('/api/followup', followupRouter)
+} catch (e) { }
+
+// Mount finalize router if available
+try {
+  const finalizeRouter = require('./routes/finalize')?.default || require('./routes/finalize')?.finalizeRouter
+  if (finalizeRouter) app.use('/api/finalize', finalizeRouter)
+} catch (e) { }
+
+// Mount new cover-letter router (builder-based)
+try {
+  const clRouter = require('./routes/coverLetter')?.default || require('./routes/coverLetter')?.coverLetterRouter
+  if (clRouter) app.use('/api/cover-letter', clRouter)
+} catch (e) { }
+
+// Mount ATS check router
+try {
+  const atsRouter = require('./routes/ats')?.default || require('./routes/ats')?.atsRouter
+  if (atsRouter) app.use('/api/ats', atsRouter)
+} catch (e) { }
+
+// Mount export adapter
+try {
+  const exportRouter = require('./routes/export')?.default || require('./routes/export')?.exportRouter
+  if (exportRouter) app.use('/api/export', exportRouter)
+} catch (e) { }
 
 // Validation schemas
 const parseSchema = z.object({
@@ -182,68 +258,98 @@ const skillAssessmentSchema = z.object({
 
 // OpenAI API helper
 async function callOpenAI(messages, maxTokens = 2000) {
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: CURRENT_AI_MODEL,
-        messages,
-        max_tokens: maxTokens,
-        temperature: 0.7,
-        response_format: { type: "json_object" }
+  const { trace } = require('@opentelemetry/api')
+  const tracer = trace.getTracer('ai')
+  return await tracer.startActiveSpan('openai.chat.completions', async (span) => {
+    const startedAt = Date.now()
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: CURRENT_AI_MODEL,
+          messages,
+          max_tokens: maxTokens,
+          temperature: 0.7,
+          response_format: { type: "json_object" }
+        })
       })
-    })
 
-    if (!response.ok) {
-      const errorData = await response.text()
-      throw new Error(`OpenAI API error: ${response.status} - ${errorData}`)
+      if (!response.ok) {
+        const errorData = await response.text()
+        const err = new Error(`OpenAI API error: ${response.status} - ${errorData}`)
+        err.status = response.status
+        throw err
+      }
+
+      const data = await response.json()
+      const durationMs = Date.now() - startedAt
+      const usage = data?.usage || {}
+      span.setAttributes({ model: CURRENT_AI_MODEL, durationMs, prompt_tokens: usage.prompt_tokens || 0, completion_tokens: usage.completion_tokens || 0, total_tokens: usage.total_tokens || 0 })
+      logger.info({ requestId: (globalThis?.req && globalThis.req.id) || undefined, traceId: span.spanContext().traceId, model: CURRENT_AI_MODEL, durationMs, tokens_used: { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens } }, 'openai_call')
+      span.end()
+      return data.choices[0].message.content
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: 2, message: error.message })
+      logger.error({ requestId: (globalThis?.req && globalThis.req.id) || undefined, traceId: span.spanContext().traceId, err: error, stack: error.stack }, 'openai_call_failed')
+      span.end()
+      throw error
     }
-
-    const data = await response.json()
-    return data.choices[0].message.content
-  } catch (error) {
-    errorLog('OpenAI API call failed:', error)
-    throw error
-  }
+  })
 }
 
 // Safe JSON-only OpenAI call helper
 async function callJsonPrompt({ system, user, maxTokens = 2000 }) {
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: CURRENT_AI_MODEL,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user }
-        ],
-        max_tokens: maxTokens,
-        temperature: 0,
-        response_format: { type: 'json_object' }
+  const { trace } = require('@opentelemetry/api')
+  const tracer = trace.getTracer('ai')
+  return await tracer.startActiveSpan('openai.json_prompt', async (span) => {
+    const startedAt = Date.now()
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: CURRENT_AI_MODEL,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user }
+          ],
+          max_tokens: maxTokens,
+          temperature: 0,
+          response_format: { type: 'json_object' }
+        })
       })
-    })
 
-    if (!response.ok) {
-      const errorData = await response.text()
-      throw new Error(`OpenAI API error: ${response.status} - ${errorData}`)
+      if (!response.ok) {
+        const errorData = await response.text()
+        const err = new Error(`OpenAI API error: ${response.status} - ${errorData}`)
+        err.status = response.status
+        throw err
+      }
+
+      const data = await response.json()
+      const content = data.choices?.[0]?.message?.content || '{}'
+      const durationMs = Date.now() - startedAt
+      const usage = data?.usage || {}
+      span.setAttributes({ model: CURRENT_AI_MODEL, durationMs, prompt_tokens: usage.prompt_tokens || 0, completion_tokens: usage.completion_tokens || 0, total_tokens: usage.total_tokens || 0 })
+      logger.info({ requestId: (globalThis?.req && globalThis.req.id) || undefined, traceId: span.spanContext().traceId, model: CURRENT_AI_MODEL, durationMs, tokens_used: { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens } }, 'openai_call')
+      span.end()
+      return JSON.parse(content)
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: 2, message: error.message })
+      logger.error({ requestId: (globalThis?.req && globalThis.req.id) || undefined, traceId: span.spanContext().traceId, err: error, stack: error.stack }, 'callJsonPrompt_failed')
+      span.end()
+      throw error
     }
-
-    const data = await response.json()
-    const content = data.choices?.[0]?.message?.content || '{}'
-    return JSON.parse(content)
-  } catch (error) {
-    errorLog('callJsonPrompt failed:', error.message)
-    throw error
-  }
+  })
 }
 
 // Error handling middleware
@@ -254,6 +360,29 @@ function asyncHandler(fn) {
 }
 
 // File extraction utility
+// Simple concurrency guard for PDF parsing (max 3 concurrent)
+let currentPdfParses = 0
+const MAX_PDF_CONCURRENCY = 3
+function acquirePdfSlot() {
+  if (currentPdfParses >= MAX_PDF_CONCURRENCY) {
+    return new Promise((resolve) => {
+      const tryAcquire = () => {
+        if (currentPdfParses < MAX_PDF_CONCURRENCY) {
+          currentPdfParses += 1
+          resolve()
+        } else {
+          setTimeout(tryAcquire, 25)
+        }
+      }
+      tryAcquire()
+    })
+  }
+  currentPdfParses += 1
+  return Promise.resolve()
+}
+function releasePdfSlot() {
+  currentPdfParses = Math.max(0, currentPdfParses - 1)
+}
 async function extractTextFromFile(file) {
   try {
     const { buffer, mimetype, originalname } = file
@@ -261,9 +390,14 @@ async function extractTextFromFile(file) {
 
     switch (mimetype) {
       case 'application/pdf':
-        const pdfData = await pdfParse(buffer)
-        debugLog(`PDF text extracted: ${pdfData.text.length} characters`)
-        return pdfData.text
+        await acquirePdfSlot()
+        try {
+          const pdfData = await pdfParse(buffer)
+          debugLog(`PDF text extracted: ${pdfData.text.length} characters`)
+          return pdfData.text
+        } finally {
+          releasePdfSlot()
+        }
 
       case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
         const docxResult = await mammoth.extractRawText({ buffer })
@@ -309,8 +443,13 @@ async function extractTextFromFilePath(filePath) {
     const ext = path.extname(resolved).toLowerCase()
     const buffer = fs.readFileSync(resolved)
     if (ext === '.pdf') {
-      const out = await pdfParse(buffer)
-      return out.text || ''
+      await acquirePdfSlot()
+      try {
+        const out = await pdfParse(buffer)
+        return out.text || ''
+      } finally {
+        releasePdfSlot()
+      }
     }
     if (ext === '.docx' || ext === '.doc') {
       const out = await mammoth.extractRawText({ buffer })
@@ -416,6 +555,14 @@ function mergeCv(base, patch) {
   }
   return UnifiedCvSchema.parse(merged)
 }
+
+// Strict input for finalize-and-create-pdf
+const finalizePdfInput = z.object({
+  cvData: UnifiedCvSchema,
+  cvLanguage: z.string().optional().default('tr'),
+  sessionId: z.string().optional(),
+  revisionRequest: z.string().optional()
+})
 
 // Helpers to read prompt templates
 function readPrompt(fileName) {
@@ -697,7 +844,7 @@ const parseInputSchema = z.object({
 app.post('/api/parse', asyncHandler(async (req, res) => {
   const validation = parseInputSchema.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   let { text, filePath } = validation.data
   try {
@@ -734,12 +881,13 @@ const sectorQuestionsOutputSchema = z.object({ questions: z.array(sectorQItemSch
 app.post('/api/sector-questions', asyncHandler(async (req, res) => {
   const validation = sectorQuestionsInputSchema.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   try {
     const { cv, target } = validation.data
+    const lang = resolveLanguage(target?.sector ? cv?.target?.lang : (cv?.target?.lang || req.body?.lang))
     const system = readPrompt('sectorQuestions.md')
-    const user = JSON.stringify({ cv, target })
+    const user = JSON.stringify({ cv, target, lang })
     const json = await callJsonPrompt({ system, user, maxTokens: 800 })
     const out = sectorQuestionsOutputSchema.safeParse(json)
     if (!out.success) {
@@ -761,14 +909,15 @@ const skillAssessGenerateOutput = z.object({ questions: z.array(skillAssessItem)
 app.post('/api/skill-assessment/generate', asyncHandler(async (req, res) => {
   const validation = skillAssessGenerateInput.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   try {
     const sessionId = req.header('X-Session-Id') || `sess_${Date.now()}_${Math.random().toString(36).slice(2)}`
     res.setHeader('X-Session-Id', sessionId)
     const { cv, target } = validation.data
+    const lang = resolveLanguage(req.body?.lang || cv?.target?.lang)
     const system = readPrompt('skillAssessment.md')
-    const user = JSON.stringify({ cv, target })
+    const user = JSON.stringify({ cv, target, lang })
     const json = await callJsonPrompt({ system, user, maxTokens: 1200 })
     const out = skillAssessGenerateOutput.safeParse(json)
     if (!out.success) {
@@ -789,7 +938,7 @@ const skillAssessGradeInput = z.object({ sessionId: z.string().min(1), answers: 
 app.post('/api/skill-assessment/grade', asyncHandler(async (req, res) => {
   const validation = skillAssessGradeInput.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   try {
     const { sessionId, answers } = validation.data
@@ -822,12 +971,13 @@ const polishOutputSchema = z.object({ cv: UnifiedCvSchema, notes: z.array(z.stri
 app.post('/api/polish', asyncHandler(async (req, res) => {
   const validation = polishInputSchema.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   try {
     const { cv, target } = validation.data
+    const lang = resolveLanguage(req.body?.lang || cv?.target?.lang)
     const system = readPrompt('polish.md')
-    const user = JSON.stringify({ cv, target })
+    const user = JSON.stringify({ cv, target, lang })
     const json = await callJsonPrompt({ system, user, maxTokens: 1800 })
     const out = polishOutputSchema.safeParse(json)
     if (!out.success) {
@@ -846,12 +996,13 @@ const atsOutputSchema = z.object({ missing: z.array(z.string()), suggested: z.ar
 app.post('/api/ats/keywords', asyncHandler(async (req, res) => {
   const validation = atsInputSchema.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   try {
     const { cv, jobText } = validation.data
+    const lang = resolveLanguage(req.body?.lang || cv?.target?.lang)
     const system = readPrompt('atsKeywords.md')
-    const user = JSON.stringify({ cv, jobText })
+    const user = JSON.stringify({ cv, jobText, lang })
     const json = await callJsonPrompt({ system, user, maxTokens: 800 })
     const out = atsOutputSchema.safeParse(json)
     if (!out.success) {
@@ -868,10 +1019,11 @@ const renderPdfInput = z.object({ cv: UnifiedCvSchema, template: z.enum(['modern
 app.post('/api/render/pdf', asyncHandler(async (req, res) => {
   const validation = renderPdfInput.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   try {
     const { cv, template } = validation.data
+    const lang = resolveLanguage(req.body?.lang || cv?.target?.lang)
     const buffer = await renderPdfBuffer(cv, template)
     const base64 = buffer.toString('base64')
     return res.json({ filename: `cv_${template}.pdf`, mime: 'application/pdf', base64 })
@@ -885,10 +1037,11 @@ const renderDocxInput = z.object({ cv: UnifiedCvSchema, template: z.enum(['moder
 app.post('/api/render/docx', asyncHandler(async (req, res) => {
   const validation = renderDocxInput.safeParse(req.body)
   if (!validation.success) {
-    return res.status(400).json({ error: 'Invalid input', details: validation.error.errors })
+    return res.status(400).json({ error: { code: 'bad_request', message: 'Invalid input', requestId: req.id } })
   }
   try {
     const { cv, template } = validation.data
+    const lang = resolveLanguage(req.body?.lang || cv?.target?.lang)
     const buffer = await renderDocxBuffer(cv, template)
     const base64 = buffer.toString('base64')
     return res.json({ filename: `cv_${template}.docx`, mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', base64 })
@@ -906,8 +1059,9 @@ app.post('/api/cover-letter', asyncHandler(async (req, res) => {
   }
   try {
     const { cv, target, jobText } = validation.data
+    const lang = resolveLanguage(req.body?.lang || cv?.target?.lang)
     const system = readPrompt('coverLetter.md')
-    const user = JSON.stringify({ cv, target, jobText })
+    const user = JSON.stringify({ cv, target, jobText, lang })
     // Request plain text; still force JSON mode off by expecting string
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -1071,8 +1225,9 @@ app.post('/api/followups', asyncHandler(async (req, res) => {
   try {
     const { cv, target } = validation.data
     const merged = mergeCv(cv, { target: target || {} })
+    const lang = resolveLanguage(req.body?.lang || merged?.target?.lang)
     const system = readPrompt('followups.md')
-    const user = JSON.stringify(merged)
+    const user = JSON.stringify({ ...merged, lang })
     const json = await callJsonPrompt({ system, user, maxTokens: 800 })
     const out = followupsResultSchema.safeParse(json)
     if (!out.success) {
@@ -1662,19 +1817,12 @@ app.post('/api/finalize-and-create-pdf', asyncHandler(async (req, res) => {
   try {
     infoLog('PDF generation requested using backend PDF service')
 
-    const {
-      cvData,
-      cvLanguage = 'tr',
-      sessionId,
-      revisionRequest
-    } = req.body
-
-    if (!cvData) {
-      return res.status(400).json({
-        error: 'CV data is required',
-        message: 'Please provide CV data for PDF generation'
-      })
+    const v = finalizePdfInput.safeParse(req.body)
+    if (!v.success) {
+      return res.status(400).json({ error: 'Invalid input', details: v.error.errors })
     }
+
+    const { cvData, cvLanguage, sessionId, revisionRequest } = v.data
 
     let dataToProcess = {
       ...cvData
@@ -1980,6 +2128,7 @@ app.get('/api/admin/stats', asyncHandler(async (req, res) => {
 
 // Catch-all for undefined routes
 app.use('*', (req, res) => {
+  req.log.warn({ requestId: req.id, path: req.originalUrl }, 'route_not_found')
   res.status(404).json({
     error: 'Route not found',
     path: req.originalUrl
@@ -1988,36 +2137,31 @@ app.use('*', (req, res) => {
 
 // Global error handler
 app.use((error, req, res, next) => {
-  console.error('Global error handler:', error)
+  logger.error({ requestId: req.id, err: error, stack: error.stack }, 'global_error')
 
-  // Validation errors
-  if (error.name === 'ValidationError') {
-    return res.status(400).json({
-      error: 'Validation failed',
-      details: error.message
-    })
+  const isProd = process.env.NODE_ENV === 'production'
+  const requestId = req.id
+  const buildError = (code, message, status = 400) => {
+    res.status(status).json({ error: { code, message, requestId } })
   }
 
   // JSON parsing errors
-  if (error.type === 'entity.parse.failed') {
-    return res.status(400).json({
-      error: 'Invalid JSON in request body'
-    })
+  if (error?.type === 'entity.parse.failed') {
+    return buildError('bad_json', 'Invalid JSON in request body', 400)
   }
 
   // Rate limit errors
-  if (error.status === 429) {
-    return res.status(429).json({
-      error: 'Rate limit exceeded',
-      message: 'Too many requests, please try again later'
-    })
+  if (error?.status === 429) {
+    return buildError('rate_limited', 'Too many requests, please try again later', 429)
+  }
+
+  // Zod or validation errors
+  if (error?.name === 'ZodError' || error?.name === 'ValidationError') {
+    return buildError('validation_failed', isProd ? 'Invalid request' : error.message, 400)
   }
 
   // Default server error
-  res.status(500).json({
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
-  })
+  return buildError('internal_error', isProd ? 'Something went wrong' : (error?.message || 'Internal error'), 500)
 })
 
 // New endpoint to generate a dynamic skill-related question
@@ -2196,15 +2340,14 @@ process.on('SIGINT', () => {
 
 // Start server
 app.listen(PORT, () => {
-  infoLog(`🚀 Server running on port ${PORT}`)
-  infoLog(`📍 Health check: http://localhost:${PORT}/api/health`)
-  infoLog(`🤖 OpenAI Model: ${process.env.OPENAI_MODEL || 'gpt-4o-mini'}`)
-  infoLog(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`)
-  infoLog(`🔍 Debug mode: ${DEBUG ? 'ENABLED' : 'DISABLED'}`)
+  logger.info({ port: PORT }, 'server_started')
+  logger.info({ url: `http://localhost:${PORT}/api/health` }, 'health_check')
+  logger.info({ model: process.env.OPENAI_MODEL || 'gpt-4o-mini' }, 'ai_model')
+  logger.info({ env: process.env.NODE_ENV || 'development', debug: !!DEBUG }, 'env')
 
   // Validate required environment variables
   if (!process.env.OPENAI_API_KEY) {
-    console.warn('⚠️  WARNING: OPENAI_API_KEY not set')
+    logger.warn('OPENAI_API_KEY not set')
   }
 })
 

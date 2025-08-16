@@ -137,13 +137,27 @@ async function createPdf(data, language = 'en') {
 
         if (IS_PRODUCTION) {
             logStep("Canlı sunucu modu: @sparticuz/chromium kullanılıyor.");
-            launchOptions = {
-                args: chromium.args,
-                defaultViewport: chromium.defaultViewport,
-                // @sparticuz/chromium paketi executablePath'i bir fonksiyon olarak sağlar
-                executablePath: await chromium.executablePath(),
-                headless: chromium.headless,
-            };
+            const chromeBin = process.env.CHROME_BIN
+            if (chromeBin) {
+                launchOptions = {
+                    args: chromium.args,
+                    defaultViewport: chromium.defaultViewport,
+                    executablePath: chromeBin,
+                    headless: true,
+                };
+            } else {
+                const pathOrNull = await chromium.executablePath()
+                if (!pathOrNull) {
+                    logStep("Chromium executable not found and CHROME_BIN not set. Failing gracefully.")
+                    throw new Error('Chromium executable not available in production. Set CHROME_BIN.')
+                }
+                launchOptions = {
+                    args: chromium.args,
+                    defaultViewport: chromium.defaultViewport,
+                    executablePath: pathOrNull,
+                    headless: chromium.headless,
+                };
+            }
         } else {
             logStep("Yerel geliştirme modu: Tam puppeteer paketi kullanılıyor.");
             launchOptions = { headless: 'new' };
@@ -182,12 +196,27 @@ async function createCoverLetterPdf(text) {
 
         if (IS_PRODUCTION) {
             logStep("Canlı sunucu modu: @sparticuz/chromium kullanılıyor.");
-            launchOptions = {
-                args: chromium.args,
-                defaultViewport: chromium.defaultViewport,
-                executablePath: await chromium.executablePath(),
-                headless: chromium.headless,
-            };
+            const chromeBin = process.env.CHROME_BIN
+            if (chromeBin) {
+                launchOptions = {
+                    args: chromium.args,
+                    defaultViewport: chromium.defaultViewport,
+                    executablePath: chromeBin,
+                    headless: true,
+                };
+            } else {
+                const pathOrNull = await chromium.executablePath()
+                if (!pathOrNull) {
+                    logStep("Chromium executable not found and CHROME_BIN not set. Failing gracefully.")
+                    throw new Error('Chromium executable not available in production. Set CHROME_BIN.')
+                }
+                launchOptions = {
+                    args: chromium.args,
+                    defaultViewport: chromium.defaultViewport,
+                    executablePath: pathOrNull,
+                    headless: chromium.headless,
+                };
+            }
         } else {
             logStep("Yerel geliştirme modu: Tam puppeteer paketi kullanılıyor.");
             launchOptions = { headless: 'new' };

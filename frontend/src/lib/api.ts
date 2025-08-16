@@ -1,29 +1,11 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ""
-
-async function postJson<T = any>(path: string, body: any): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {})
-  })
-  const text = await res.text()
-  let json: any = {}
-  try {
-    json = text ? JSON.parse(text) : {}
-  } catch {
-    json = { error: "invalid_json", raw: text }
-  }
-  if (!res.ok) {
-    const err = (json && (json.error || json.message)) || "request_failed"
-    throw new Error(typeof err === "string" ? err : JSON.stringify(json))
-  }
-  return json as T
-}
+import { createApiClient } from "./api.client"
+import { useMutation, useQuery } from "@tanstack/react-query"
 
 export type ApiParseRequest = { text?: string; filePath?: string }
 export type ApiParseResponse = { cv: any }
 export function apiParse(input: ApiParseRequest): Promise<ApiParseResponse> {
-  return postJson("/api/parse", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.parse(input)
 }
 
 export type ApiTypeDetectRequest = { cv: any }
@@ -39,7 +21,8 @@ export type ApiTypeDetectResponse = {
 export function apiTypeDetect(
   input: ApiTypeDetectRequest
 ): Promise<ApiTypeDetectResponse> {
-  return postJson("/api/type-detect", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.typeDetect(input)
 }
 
 export type ApiFollowupsRequest = {
@@ -52,7 +35,8 @@ export type ApiFollowupsResponse = {
 export function apiFollowups(
   input: ApiFollowupsRequest
 ): Promise<ApiFollowupsResponse> {
-  return postJson("/api/followups", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.followups(input)
 }
 
 // New aliases as requested (post* helpers)
@@ -69,7 +53,8 @@ export type SectorQuestionsRes = {
 export function postSectorQuestions(
   input: SectorQuestionsReq
 ): Promise<SectorQuestionsRes> {
-  return postJson("/api/sector-questions", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.sectorQuestions(input)
 }
 
 export type SkillAssessGenReq = {
@@ -88,29 +73,13 @@ export function postSkillAssessmentGenerate(
   input: SkillAssessGenReq,
   sessionId?: string
 ): Promise<SkillAssessGenRes> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (sessionId) headers["X-Session-Id"] = sessionId
-  return fetch(`${API_BASE}/api/skill-assessment/generate`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(input)
-  }).then(async (res) => {
-    const text = await res.text()
-    let json: any = {}
-    try {
-      json = text ? JSON.parse(text) : {}
-    } catch {
-      json = { error: "invalid_json", raw: text }
-    }
-    if (!res.ok)
-      throw new Error(json?.error || json?.message || "request_failed")
-    return json as SkillAssessGenRes
-  })
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.skillAssessment.generate(input, sessionId)
 }
 
 export type SkillAssessGradeReq = {
   sessionId: string
-  answers: Array<{ id: string; choice: string }>
+  answers: Array<{ id: string; choice: "A" | "B" | "C" | "D" }>
 }
 export type SkillAssessGradeRes = {
   score: { correct: number; total: number; pct: number }
@@ -119,7 +88,8 @@ export type SkillAssessGradeRes = {
 export function postSkillAssessmentGrade(
   input: SkillAssessGradeReq
 ): Promise<SkillAssessGradeRes> {
-  return postJson("/api/skill-assessment/grade", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.skillAssessment.grade(input)
 }
 
 // Finalize-stage client helpers
@@ -127,32 +97,37 @@ export function postPolish(input: {
   cv: any
   target: any
 }): Promise<{ cv: any; notes: string[] }> {
-  return postJson("/api/polish", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.polish(input)
 }
 export function postAtsKeywords(input: {
   cv: any
   jobText: string
 }): Promise<{ missing: string[]; suggested: string[]; score: number }> {
-  return postJson("/api/ats/keywords", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.atsKeywords(input)
 }
 export function postRenderPdf(input: {
   cv: any
   template: "modern" | "compact" | "classic"
 }): Promise<{ filename: string; mime: string; base64: string }> {
-  return postJson("/api/render/pdf", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.render.pdf(input)
 }
 export function postRenderDocx(input: {
   cv: any
   template: "modern" | "compact" | "classic"
 }): Promise<{ filename: string; mime: string; base64: string }> {
-  return postJson("/api/render/docx", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.render.docx(input)
 }
 export function postCoverLetter(input: {
   cv: any
   target: any
   jobText?: string
 }): Promise<{ letter: string }> {
-  return postJson("/api/cover-letter", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.coverLetter(input)
 }
 
 // Drafts & sharing & analytics
@@ -162,7 +137,8 @@ export function postDraftSave(input: {
   target?: any
   extras?: any
 }): Promise<{ draftId: string; savedAt: string; size: number }> {
-  return postJson("/api/drafts/save", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.drafts.save(input)
 }
 export function getDraft(draftId: string): Promise<{
   draftId: string
@@ -171,22 +147,25 @@ export function getDraft(draftId: string): Promise<{
   extras: any
   savedAt: string
 }> {
-  return fetch(`${API_BASE}/api/drafts/${draftId}`).then((res) => res.json())
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.drafts.get(draftId)
 }
 export function postShareCreate(input: {
   draftId: string
   ttlDays?: number
 }): Promise<{ shareId: string; shareUrl: string; expiresAt: string }> {
-  return postJson("/api/share/create", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.share.create(input)
 }
 export function postAnalytics(input: {
   type: string
   payload?: any
 }): Promise<{ ok: true }> {
-  return postJson("/api/analytics/event", input)
+  const client = createApiClient({ baseUrl: API_BASE })
+  return client.analytics(input)
 }
 
-import { useMutation, useQuery } from "@tanstack/react-query"
+// moved to top
 
 // API Base URL - use environment variable or fallback to production
 const getApiBase = () => {
@@ -377,20 +356,18 @@ async function apiRequest<T>(
  * Extract raw text from CV (alias for parseCV)
  */
 export async function extractRaw(rawText: string): Promise<CVData> {
-  return apiRequest<CVData>("/api/extract-raw", {
-    method: "POST",
-    body: JSON.stringify({ rawText })
-  })
+  const client = createApiClient({ baseUrl: API_BASE })
+  const data = await client.legacy.extractRaw({ rawText })
+  return data as unknown as CVData
 }
 
 /**
  * Parse raw CV text into structured data
  */
 export async function parseCV(rawText: string): Promise<CVData> {
-  return apiRequest<CVData>("/api/ai/parse", {
-    method: "POST",
-    body: JSON.stringify({ rawText })
-  })
+  const client = createApiClient({ baseUrl: API_BASE })
+  const data = await client.legacy.ai.parse({ rawText })
+  return data as unknown as CVData
 }
 
 /**
@@ -400,16 +377,9 @@ export async function generateQuestions(
   cv: CVData,
   count: number = 4
 ): Promise<Question[]> {
-  const response = await apiRequest<{ questions?: Question[] } | Question[]>(
-    "/api/ai/questions",
-    {
-      method: "POST",
-      body: JSON.stringify({ cv, count })
-    }
-  )
-
-  // Handle both direct array response and wrapped response
-  return Array.isArray(response) ? response : response.questions || []
+  const client = createApiClient({ baseUrl: API_BASE })
+  const res = await client.followups({ cv: cv as any })
+  return res.questions as unknown as Question[]
 }
 
 /**
@@ -419,20 +389,27 @@ export async function improveCV(
   cv: CVData,
   answers: Record<string, any>
 ): Promise<CVData> {
-  return apiRequest<CVData>("/api/ai/improve", {
-    method: "POST",
-    body: JSON.stringify({ cv, answers })
-  })
+  const client = createApiClient({ baseUrl: API_BASE })
+  const data = await client.legacy.ai.improve({ cv, answers })
+  return data as unknown as CVData
 }
 
 /**
  * Score CV and get improvement suggestions
  */
 export async function scoreCV(cv: CVData): Promise<ScoreResult> {
-  return apiRequest<ScoreResult>("/api/ai/score", {
-    method: "POST",
-    body: JSON.stringify({ cv })
-  })
+  const client = createApiClient({ baseUrl: API_BASE })
+  const data = await client.legacy.ai.score({ cv })
+  if (data && typeof data === "object" && "overall" in data) {
+    const d: any = data
+    return {
+      score: typeof d.overall === "number" ? d.overall : 0,
+      strengths: Array.isArray(d.strengths) ? d.strengths : [],
+      weaknesses: Array.isArray(d.weaknesses) ? d.weaknesses : [],
+      suggestions: Array.isArray(d.suggestions) ? d.suggestions : []
+    }
+  }
+  return data as unknown as ScoreResult
 }
 
 /**
@@ -442,16 +419,13 @@ export async function writeCoverLetter(
   cv: CVData,
   roleHint?: string
 ): Promise<string> {
-  const response = await apiRequest<{ coverLetter?: string } | string>(
-    "/api/ai/coverletter",
-    {
-      method: "POST",
-      body: JSON.stringify({ cv, roleHint })
-    }
-  )
-
-  // Handle both direct string response and wrapped response
-  return typeof response === "string" ? response : response.coverLetter || ""
+  const client = createApiClient({ baseUrl: API_BASE })
+  const data = await client.legacy.ai.coverletter({ cv, roleHint })
+  if (typeof data === "string") return data
+  if (data && typeof data === "object" && "coverLetter" in data) {
+    return (data as any).coverLetter || ""
+  }
+  return ""
 }
 
 // React Query Mutation Hooks

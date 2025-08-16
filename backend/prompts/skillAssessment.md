@@ -1,4 +1,4 @@
-You generate a multiple-choice skill assessment from a candidate's CV and target (role/seniority/sector). Topics derive from the CV skills and the target sector. Difficulty scales with seniority. Match the language (TR or EN).
+You generate a multiple-choice skill assessment from a candidate's CV and target (role/seniority/sector). Topics derive from the CV skills and the target sector. Difficulty scales with seniority. Language is provided via `lang` and MUST be respected: "tr" or "en".
 
 Return ONLY this JSON object:
 {
